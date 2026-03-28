@@ -1,6 +1,6 @@
 """Tests for the in-memory session store."""
 import pytest
-from app.session_store import create_session, get_session, delete_session, clear_all_sessions
+from app.session_store import create_session, get_session, update_session, delete_session, clear_all_sessions
 
 
 def test_create_session_returns_uuid_string():
@@ -51,6 +51,21 @@ def test_session_data_is_mutable_in_place():
     session = get_session(session_id)
     session["count"] = 5
     assert get_session(session_id)["count"] == 5
+
+
+def test_update_session_merges_data():
+    """update_session merges new keys into the existing session."""
+    session_id = create_session({"stage": "intro", "count": 0})
+    update_session(session_id, {"stage": "questions", "count": 1})
+    session = get_session(session_id)
+    assert session["stage"] == "questions"
+    assert session["count"] == 1
+
+
+def test_update_session_raises_key_error_for_missing_id():
+    """update_session raises KeyError when the session ID does not exist."""
+    with pytest.raises(KeyError):
+        update_session("nonexistent-id", {"stage": "questions"})
 
 
 def test_clear_all_sessions_removes_all():

@@ -24,6 +24,14 @@ def get_session(session_id: str) -> dict[str, Any]:
     return _sessions[session_id]
 
 
+def update_session(session_id: str, data: dict[str, Any]) -> None:
+    """Merge data into the existing session dict.
+
+    Raises KeyError if the session does not exist.
+    """
+    _sessions[session_id].update(data)
+
+
 def delete_session(session_id: str) -> None:
     """Remove the session for the given ID.
 
