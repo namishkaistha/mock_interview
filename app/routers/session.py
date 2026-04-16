@@ -2,11 +2,11 @@
 import asyncio
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 
-from app.models.schemas import SessionStartResponse
+from app.models.schemas import RespondRequest, RespondResponse, SessionStartResponse
 from app.services.resume_parser import parse_resume
 from app.services.scraper import scrape_company, scrape_interviewer
-from app.services.llm import generate_session_setup
-from app.session_store import create_session
+from app.services.llm import generate_session_setup, generate_response
+from app.session_store import create_session, get_session, update_session
 
 router = APIRouter()
 
@@ -76,4 +76,62 @@ async def session_start(
         stage="intro",
         interviewer_persona=setup["persona"],
         intro_message=setup["intro_message"],
+    )
+
+
+@router.post("/{session_id}/respond", response_model=RespondResponse)
+async def session_respond(session_id: str, body: RespondRequest):
+    """Handle one exchange in an ongoing interview session.
+
+    Generates a stage-appropriate AI reply, appends both turns to the
+    transcript, and advances the stage machine when thresholds are met:
+    - intro → questions after 2 exchanges
+    - questions → open_qa after all prepared questions are answered
+    - open_qa marks interview_complete=True
+
+    Args:
+        session_id: UUID of the session returned by /start.
+        body: RespondRequest with user_input and current stage.
+
+    Returns:
+        RespondResponse with ai_message, updated stage, question_index,
+        and interview_complete flag.
+
+    Raises:
+        HTTPException 404: If the session does not exist.
+    """
+    try:
+        session = get_session(session_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    ai_message = await generate_response(session, body.user_input)
+
+    session["transcript"].append({"role": "user", "content": body.user_input})
+    session["transcript"].append({"role": "ai", "content": ai_message})
+
+    current_stage = session["stage"]
+    new_stage = current_stage
+    interview_complete = False
+
+    if current_stage == "intro":
+        session["exchanges"] += 1
+        if session["exchanges"] >= 2:
+            new_stage = "questions"
+    elif current_stage == "questions":
+        session["question_index"] += 1
+        if session["question_index"] >= len(session["questions"]):
+            new_stage = "open_qa"
+    elif current_stage == "open_qa":
+        interview_complete = True
+
+    update_session(session_id, {"stage": new_stage})
+
+    question_index = session["question_index"] if new_stage == "questions" else None
+
+    return RespondResponse(
+        ai_message=ai_message,
+        stage=new_stage,
+        question_index=question_index,
+        interview_complete=interview_complete,
     )
