@@ -2,11 +2,11 @@
 import asyncio
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 
-from app.models.schemas import RespondRequest, RespondResponse, SessionStartResponse
+from app.models.schemas import RespondRequest, RespondResponse, SessionEndResponse, SessionStartResponse
 from app.services.resume_parser import parse_resume
 from app.services.scraper import scrape_company, scrape_interviewer
-from app.services.llm import generate_session_setup, generate_response
-from app.session_store import create_session, get_session, update_session
+from app.services.llm import generate_session_setup, generate_response, evaluate_interview
+from app.session_store import create_session, get_session, update_session, delete_session
 
 router = APIRouter()
 
@@ -135,3 +135,31 @@ async def session_respond(session_id: str, body: RespondRequest):
         question_index=question_index,
         interview_complete=interview_complete,
     )
+
+
+@router.post("/{session_id}/end", response_model=SessionEndResponse)
+async def session_end(session_id: str):
+    """Evaluate the completed interview and return STAR-scored feedback.
+
+    Sends the full session transcript to Claude for evaluation, returns
+    structured feedback, then removes the session from memory.
+
+    Args:
+        session_id: UUID of the session returned by /start.
+
+    Returns:
+        SessionEndResponse with overall_score, summary, per-question STAR
+        feedback, top_strengths, and top_improvements.
+
+    Raises:
+        HTTPException 404: If the session does not exist.
+    """
+    try:
+        session = get_session(session_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    feedback = await evaluate_interview(session)
+    delete_session(session_id)
+
+    return SessionEndResponse(**feedback)
