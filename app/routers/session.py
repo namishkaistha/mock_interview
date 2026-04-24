@@ -1,11 +1,12 @@
-"""Session router: POST /session/start, /respond, /end."""
-import asyncio
+"""Session router: POST /session/start, /respond, /respond/stream, /end."""
+import json
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
+from fastapi.responses import StreamingResponse as FastAPIStreamingResponse
 
 from app.models.schemas import RespondRequest, RespondResponse, SessionEndResponse, SessionStartResponse
 from app.services.resume_parser import parse_resume
-from app.services.scraper import scrape_company, scrape_interviewer
-from app.services.llm import generate_session_setup, generate_response, evaluate_interview
+from app.services.scraper import scrape_company
+from app.services.llm import generate_session_setup, generate_response, generate_response_stream, evaluate_interview
 from app.session_store import create_session, get_session, update_session, delete_session
 
 router = APIRouter()
@@ -16,20 +17,17 @@ async def session_start(
     resume: UploadFile = File(...),
     role: str = Form(...),
     company: str = Form(""),
-    interviewer: str = Form(""),
 ):
     """Start a new mock interview session.
 
-    Parses the uploaded PDF resume, fetches web context for the company
-    and interviewer (in parallel), asks Claude to generate a persona and
-    behavioral questions, then stores everything in the in-memory session
-    store.
+    Parses the uploaded PDF resume, fetches web context for the company,
+    asks Claude to generate a persona and behavioral competency themes,
+    then stores everything in the in-memory session store.
 
     Args:
         resume: Uploaded PDF file.
         role: Job role the candidate is interviewing for.
         company: Target company name (optional).
-        interviewer: Interviewer's name (optional).
 
     Returns:
         SessionStartResponse with session_id, stage, interviewer_persona,
@@ -44,18 +42,13 @@ async def session_start(
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
 
-    company_ctx, interviewer_ctx = await asyncio.gather(
-        scrape_company(company, role),
-        scrape_interviewer(interviewer, company),
-    )
+    company_ctx = await scrape_company(company, role)
 
     setup = await generate_session_setup(
         resume_text=resume_text,
         role=role,
         company_ctx=company_ctx,
-        interviewer_ctx=interviewer_ctx,
         company=company,
-        interviewer=interviewer,
     )
 
     session_id = create_session({
@@ -67,7 +60,8 @@ async def session_start(
         "intro_message": setup["intro_message"],
         "role": role,
         "company": company,
-        "interviewer": interviewer,
+        "company_ctx": company_ctx,
+        "resume_text": resume_text,
         "exchanges": 0,
     })
 
@@ -134,6 +128,58 @@ async def session_respond(session_id: str, body: RespondRequest):
         stage=new_stage,
         question_index=question_index,
         interview_complete=interview_complete,
+    )
+
+
+@router.post("/{session_id}/respond/stream")
+async def session_respond_stream(session_id: str, body: RespondRequest):
+    """Streaming version of /respond — sends tokens via SSE as they arrive.
+
+    Emits two event types:
+      {"type": "token", "text": "<chunk>"}  — streamed text fragments
+      {"type": "done", "stage": "...", "interview_complete": false}  — final metadata
+
+    The transcript and stage are updated after the full message is assembled.
+    """
+    try:
+        session = get_session(session_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    # Compute stage transition upfront so it's included in the done event
+    current_stage = session["stage"]
+    new_stage = current_stage
+    interview_complete = False
+
+    if current_stage == "intro":
+        session["exchanges"] += 1
+        if session["exchanges"] >= 2:
+            new_stage = "questions"
+    elif current_stage == "questions":
+        session["question_index"] += 1
+        if session["question_index"] >= len(session["questions"]):
+            new_stage = "open_qa"
+    elif current_stage == "open_qa":
+        interview_complete = True
+
+    async def event_generator():
+        full_message = ""
+        async for chunk in generate_response_stream(session, body.user_input):
+            full_message += chunk
+            yield f"data: {json.dumps({'type': 'token', 'text': chunk})}\n\n"
+
+        # Persist transcript + stage after streaming completes
+        session["transcript"].append({"role": "user", "content": body.user_input})
+        session["transcript"].append({"role": "ai", "content": full_message})
+        update_session(session_id, {"stage": new_stage})
+
+        done_payload = {"type": "done", "stage": new_stage, "interview_complete": interview_complete}
+        yield f"data: {json.dumps(done_payload)}\n\n"
+
+    return FastAPIStreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
 
 
