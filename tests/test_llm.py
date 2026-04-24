@@ -70,9 +70,7 @@ async def test_generate_session_setup_returns_expected_keys(mocker):
         resume_text="Jane Doe, Software Engineer",
         role="Software Engineer",
         company_ctx="Google values collaboration.",
-        interviewer_ctx="Alex is a senior engineer.",
         company="Google",
-        interviewer="Alex",
     )
     assert "persona" in result
     assert "questions" in result
@@ -121,7 +119,7 @@ async def test_generate_response_includes_stage_in_prompt(mocker):
     call_args = mock_client.messages.create.call_args
     messages = call_args.kwargs.get("messages") or call_args.args[0]
     prompt_text = " ".join(m["content"] for m in messages if isinstance(m.get("content"), str))
-    assert "questions" in prompt_text
+    assert "QUESTIONS" in prompt_text
 
 
 # ---------------------------------------------------------------------------
