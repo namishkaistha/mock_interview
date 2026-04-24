@@ -2,16 +2,9 @@
 
 import { useEffect, useRef, useState, useCallback } from "react";
 import { useRouter, useParams } from "next/navigation";
-import ChatBubble, { BubbleState } from "@/components/ChatBubble";
+import InterviewBlob, { BlobState } from "@/components/InterviewBlob";
 import VoiceButton from "@/components/VoiceButton";
-import { respond, endSession, textToSpeech, transcribe } from "@/lib/api";
-
-interface Message {
-  id: string;
-  role: "ai" | "user";
-  content: string;
-  state?: BubbleState;
-}
+import { respondStream, endSession, textToSpeech, transcribe } from "@/lib/api";
 
 function playBlob(blob: Blob): Promise<void> {
   return new Promise((resolve, reject) => {
@@ -26,22 +19,42 @@ function playBlob(blob: Blob): Promise<void> {
   });
 }
 
+/** Strip stage directions like *nods thoughtfully* and collapse extra spaces. */
+function stripActions(text: string): string {
+  return text.replace(/\*[^*]+\*/g, " ").replace(/\s+/g, " ").trim();
+}
+
 export default function InterviewPage() {
   const router = useRouter();
   const { sessionId } = useParams<{ sessionId: string }>();
 
-  const [messages, setMessages] = useState<Message[]>([]);
+  const [blobState, setBlobState] = useState<BlobState>("idle");
+  const [caption, setCaption] = useState<string>("");
+  const [captionVisible, setCaptionVisible] = useState(false);
+
   const [stage, setStage] = useState("intro");
   const [interviewComplete, setInterviewComplete] = useState(false);
-  const [aiSpeaking, setAiSpeaking] = useState(false);
-  const [waitingForUser, setWaitingForUser] = useState(false);
   const [voiceDisabled, setVoiceDisabled] = useState(true);
   const [elapsed, setElapsed] = useState(0);
   const [endingSession, setEndingSession] = useState(false);
 
-  const bottomRef = useRef<HTMLDivElement>(null);
   const startTimeRef = useRef(Date.now());
-  const lastMsgIdRef = useRef<string | null>(null);
+  const introPlayedRef = useRef(false);
+
+  // Ordered TTS promise queue — preserves sentence playback order even when
+  // shorter sentences resolve faster than earlier longer ones.
+  const ttsQueueRef = useRef<Promise<Blob>[]>([]);
+  const isPlayingRef = useRef(false);
+
+  const drainQueue = useCallback(async () => {
+    if (isPlayingRef.current) return;
+    isPlayingRef.current = true;
+    while (ttsQueueRef.current.length > 0) {
+      const blobPromise = ttsQueueRef.current.shift()!;
+      await blobPromise.then((blob) => playBlob(blob)).catch(() => {});
+    }
+    isPlayingRef.current = false;
+  }, []);
 
   // Timer
   useEffect(() => {
@@ -65,108 +78,146 @@ export default function InterviewPage() {
     return stage;
   };
 
-  const addMessage = useCallback((msg: Omit<Message, "id">): string => {
-    const id = crypto.randomUUID();
-    setMessages((prev) => [...prev, { ...msg, id }]);
-    lastMsgIdRef.current = id;
-    return id;
+  const showCaption = useCallback((text: string) => {
+    setCaption(text);
+    setCaptionVisible(true);
   }, []);
 
-  const updateLastAiState = useCallback((state: BubbleState) => {
-    setMessages((prev) =>
-      prev.map((m) =>
-        m.id === lastMsgIdRef.current ? { ...m, state } : m
-      )
-    );
+  const hideCaption = useCallback(() => {
+    setCaptionVisible(false);
+    setTimeout(() => setCaption(""), 400);
   }, []);
 
   const speakAndWait = useCallback(
-    async (text: string, speakerName: string) => {
-      const id = addMessage({ role: "ai", content: text, state: "speaking" });
-      lastMsgIdRef.current = id;
-      setAiSpeaking(true);
+    async (text: string) => {
+      const cleaned = stripActions(text);
+      showCaption(cleaned);
+      setBlobState("speaking");
       setVoiceDisabled(true);
 
       try {
-        const blob = await textToSpeech(text);
-        await playBlob(blob);
+        const audioBlob = await textToSpeech(cleaned);
+        await playBlob(audioBlob);
       } catch {
-        // If TTS fails, just continue
+        // TTS failed — wait a moment so the caption is readable
+        await new Promise((r) => setTimeout(r, Math.min(cleaned.length * 50, 4000)));
       }
 
-      setAiSpeaking(false);
-      setMessages((prev) =>
-        prev.map((m) => (m.id === id ? { ...m, state: "waiting" } : m))
-      );
-      setWaitingForUser(true);
+      setBlobState("idle");
       setVoiceDisabled(false);
     },
-    [addMessage]
+    [showCaption]
   );
 
-  // On mount: load intro from localStorage and play
+  // On mount: play intro
   useEffect(() => {
+    if (introPlayedRef.current) return;
+    introPlayedRef.current = true;
+
     const stored = localStorage.getItem(`session-${sessionId}`);
     if (!stored) {
       router.push("/");
       return;
     }
-    const { intro_message, interviewer_persona } = JSON.parse(stored);
-    const speakerName = interviewer_persona?.split(" ")[0] ?? "AI";
-
-    speakAndWait(intro_message, speakerName);
+    const { intro_message } = JSON.parse(stored);
+    speakAndWait(intro_message);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionId]);
-
-  // Auto-scroll
-  useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages]);
 
   const handleTranscript = useCallback(
     async (text: string) => {
       if (voiceDisabled) return;
       setVoiceDisabled(true);
-      setWaitingForUser(false);
+      hideCaption();
+      setBlobState("processing");
 
-      // Mark previous AI bubble as idle
-      updateLastAiState("idle");
-
-      addMessage({ role: "user", content: text });
+      // Reset TTS queue
+      ttsQueueRef.current = [];
+      isPlayingRef.current = false;
 
       try {
-        const data = await respond(sessionId, text, stage);
-        setStage(data.stage);
-        setInterviewComplete(data.interview_complete);
+        let fullText = "";
+        let sentenceBuffer = "";
+        let streamDone = false;
+        let finalStage = stage;
+        let finalComplete = false;
 
-        const stored = localStorage.getItem(`session-${sessionId}`);
-        const persona = stored ? JSON.parse(stored).interviewer_persona : "";
-        const speakerName = persona?.split(" ")[0] ?? "AI";
+        // Regex for sentence boundaries
+        const SENTENCE_END = /([.!?])\s/;
 
-        if (data.interview_complete) {
-          // Show final message without waiting for response
-          addMessage({ role: "ai", content: data.ai_message, state: "idle" });
-          try {
-            const blob = await textToSpeech(data.ai_message);
-            await playBlob(blob);
-          } catch {}
+        const flushSentence = (sentence: string) => {
+          // Strip action descriptions like *nods thoughtfully* before TTS
+          const cleaned = stripActions(sentence);
+          if (!cleaned) return;
+          if (fullText === "") showCaption(cleaned);
+          setBlobState("speaking");
+          // Push TTS promise in order — drainQueue awaits them sequentially,
+          // so playback is always in sentence order regardless of network timing.
+          ttsQueueRef.current.push(
+            textToSpeech(cleaned).catch(() => new Blob([], { type: "audio/mpeg" }))
+          );
+          drainQueue();
+        };
+
+        for await (const event of respondStream(sessionId, text, stage)) {
+          if (event.type === "token") {
+            fullText += event.text;
+            sentenceBuffer += event.text;
+
+            // Flush complete sentences as they arrive
+            let match: RegExpExecArray | null;
+            while ((match = SENTENCE_END.exec(sentenceBuffer)) !== null) {
+              const end = match.index + 1;
+              flushSentence(sentenceBuffer.slice(0, end));
+              sentenceBuffer = sentenceBuffer.slice(end + 1);
+            }
+          } else if (event.type === "done") {
+            finalStage = event.stage;
+            finalComplete = event.interview_complete;
+            streamDone = true;
+          }
+        }
+
+        // Flush any remaining text after stream ends
+        if (sentenceBuffer.trim()) {
+          flushSentence(sentenceBuffer.trim());
+        }
+
+        // Update caption with full text once stream is done (strip action descriptions)
+        if (fullText.trim()) showCaption(stripActions(fullText));
+
+        // Wait for all queued audio to finish playing
+        await new Promise<void>((resolve) => {
+          const check = () => {
+            if (!isPlayingRef.current && ttsQueueRef.current.length === 0) {
+              resolve();
+            } else {
+              setTimeout(check, 100);
+            }
+          };
+          check();
+        });
+
+        setStage(finalStage);
+        setInterviewComplete(finalComplete);
+
+        if (finalComplete) {
+          setBlobState("idle");
           setVoiceDisabled(true);
         } else {
-          await speakAndWait(data.ai_message, speakerName);
+          setBlobState("idle");
+          setVoiceDisabled(false);
         }
-      } catch (err) {
-        addMessage({
-          role: "ai",
-          content: "Something went wrong. Please try again.",
-          state: "idle",
-        });
+      } catch {
+        showCaption("Something went wrong. Please try again.");
+        setBlobState("idle");
         setVoiceDisabled(false);
       }
     },
-    [voiceDisabled, sessionId, stage, addMessage, updateLastAiState, speakAndWait]
+    [voiceDisabled, sessionId, stage, showCaption, hideCaption, drainQueue]
   );
 
-  const handleGetFeedback = async () => {
+  const handleGetFeedback = useCallback(async () => {
     setEndingSession(true);
     try {
       const feedback = await endSession(sessionId);
@@ -175,10 +226,23 @@ export default function InterviewPage() {
     } catch {
       setEndingSession(false);
     }
+  }, [sessionId, router]);
+
+  const handleSkip = () => {
+    if (window.confirm("End the interview now and get your feedback?")) {
+      handleGetFeedback();
+    }
   };
 
+  // Sync blobState with voice button state from VoiceButton
+  const handleVoiceStateChange = useCallback((vs: "idle" | "listening" | "processing" | "error") => {
+    if (vs === "listening") setBlobState("listening");
+    else if (vs === "processing") setBlobState("processing");
+    // idle/error handled by speakAndWait flow
+  }, []);
+
   return (
-    <div className="flex flex-col h-screen bg-neutral-950">
+    <div className="flex flex-col h-screen bg-neutral-950 overflow-hidden">
       {/* Header */}
       <header className="sticky top-0 z-30 bg-neutral-950/90 backdrop-blur border-b border-neutral-800 px-4 py-3 flex items-center justify-between">
         <button
@@ -191,31 +255,41 @@ export default function InterviewPage() {
           <span className="bg-indigo-500/10 text-indigo-300 text-[11px] uppercase tracking-widest px-3 py-1 rounded-full border border-indigo-500/20">
             {stageLabel()}
           </span>
-          <span className="text-slate-400 text-sm tabular-nums">
-            {formatTime(elapsed)}
-          </span>
+          <span className="text-slate-400 text-sm tabular-nums">{formatTime(elapsed)}</span>
         </div>
+        <button
+          onClick={handleSkip}
+          disabled={endingSession}
+          className="text-slate-400 hover:text-slate-200 disabled:opacity-40 transition-colors text-sm"
+        >
+          {endingSession ? "Loading…" : "Skip →"}
+        </button>
       </header>
 
-      {/* Chat */}
-      <div className="flex-1 overflow-y-auto px-4 py-6">
-        <div className="max-w-2xl mx-auto">
-          {messages.map((msg) => {
-            const stored = localStorage.getItem(`session-${sessionId}`);
-            const persona = stored ? JSON.parse(stored).interviewer_persona : "";
-            const speakerName = persona?.split(" ")[0] ?? "AI";
-            return (
-              <ChatBubble
-                key={msg.id}
-                role={msg.role}
-                content={msg.content}
-                speakerName={speakerName}
-                state={msg.state}
-              />
-            );
-          })}
-          <div ref={bottomRef} />
+      {/* Main area — blob + caption */}
+      <div className="flex-1 flex flex-col items-center justify-center gap-8 px-6">
+        <InterviewBlob state={blobState} />
+
+        {/* Caption */}
+        <div
+          className="max-w-sm text-center transition-all duration-400"
+          style={{
+            opacity: captionVisible ? 1 : 0,
+            transform: captionVisible ? "translateY(0)" : "translateY(8px)",
+            transition: "opacity 400ms ease, transform 400ms ease",
+          }}
+        >
+          <p className="text-slate-300 text-sm leading-relaxed">{caption}</p>
         </div>
+
+        {/* State label */}
+        <p className="text-[11px] uppercase tracking-widest text-slate-500">
+          {blobState === "speaking" && "Speaking…"}
+          {blobState === "listening" && "Listening…"}
+          {blobState === "processing" && "Thinking…"}
+          {blobState === "idle" && !voiceDisabled && "Hold to respond"}
+          {blobState === "idle" && voiceDisabled && " "}
+        </p>
       </div>
 
       {/* Feedback CTA */}
@@ -237,10 +311,10 @@ export default function InterviewPage() {
           onTranscript={handleTranscript}
           disabled={voiceDisabled}
           transcribeAudio={transcribe}
+          onVoiceStateChange={handleVoiceStateChange}
         />
       )}
 
-      {/* Bottom padding for voice button */}
       <div className="h-40" />
     </div>
   );

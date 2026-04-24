@@ -24,9 +24,6 @@ def mock_services(mocker):
     mocker.patch("app.routers.session.parse_resume", return_value="Jane Doe resume text")
     mocker.patch("app.routers.session.scrape_company", new=AsyncMock(return_value="Google info"))
     mocker.patch(
-        "app.routers.session.scrape_interviewer", new=AsyncMock(return_value="Alex background")
-    )
-    mocker.patch(
         "app.routers.session.generate_session_setup", new=AsyncMock(return_value=_FAKE_SETUP)
     )
 

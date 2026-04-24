@@ -66,6 +66,36 @@
   }
 }
 
+@keyframes morph {
+  0%   { border-radius: 60% 40% 30% 70% / 60% 30% 70% 40%; }
+  25%  { border-radius: 40% 60% 55% 45% / 50% 65% 35% 50%; }
+  50%  { border-radius: 30% 60% 70% 40% / 50% 60% 30% 60%; }
+  75%  { border-radius: 55% 45% 40% 60% / 40% 50% 60% 50%; }
+  100% { border-radius: 60% 40% 30% 70% / 60% 30% 70% 40%; }
+}
+
+@keyframes morph-alt {
+  0%   { border-radius: 40% 60% 55% 45% / 55% 45% 55% 45%; }
+  33%  { border-radius: 60% 40% 40% 60% / 40% 60% 40% 60%; }
+  66%  { border-radius: 45% 55% 60% 40% / 60% 40% 45% 55%; }
+  100% { border-radius: 40% 60% 55% 45% / 55% 45% 55% 45%; }
+}
+
+@keyframes breathe {
+  0%, 100% { transform: scale(1); opacity: 0.85; }
+  50%       { transform: scale(1.06); opacity: 1; }
+}
+
+@keyframes blob-spin {
+  from { transform: rotate(0deg); }
+  to   { transform: rotate(360deg); }
+}
+
+@keyframes blob-ring {
+  0%   { transform: scale(1); opacity: 0.6; }
+  100% { transform: scale(2.2); opacity: 0; }
+}
+
 html {
   color-scheme: dark;
 }

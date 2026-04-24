@@ -8,14 +8,21 @@ interface VoiceButtonProps {
   onTranscript: (text: string) => void;
   disabled?: boolean;
   transcribeAudio: (blob: Blob) => Promise<{ text: string }>;
+  onVoiceStateChange?: (state: VoiceState) => void;
 }
 
 export default function VoiceButton({
   onTranscript,
   disabled = false,
   transcribeAudio,
+  onVoiceStateChange,
 }: VoiceButtonProps) {
   const [voiceState, setVoiceState] = useState<VoiceState>("idle");
+
+  const setVS = useCallback((s: VoiceState) => {
+    setVoiceState(s);
+    onVoiceStateChange?.(s);
+  }, [onVoiceStateChange]);
   const [errorMsg, setErrorMsg] = useState<string>("");
   const [fallbackText, setFallbackText] = useState("");
   const [showFallback, setShowFallback] = useState(false);
@@ -29,7 +36,7 @@ export default function VoiceButton({
 
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      const recorder = new MediaRecorder(stream, { mimeType: "audio/webm" });
+      const recorder = new MediaRecorder(stream, { mimeType: "audio/webm", audioBitsPerSecond: 16000 });
       chunksRef.current = [];
 
       recorder.ondataavailable = (e) => {
@@ -39,33 +46,33 @@ export default function VoiceButton({
       recorder.onstop = async () => {
         stream.getTracks().forEach((t) => t.stop());
         const blob = new Blob(chunksRef.current, { type: "audio/webm" });
-        setVoiceState("processing");
+        setVS("processing");
         try {
           const result = await transcribeAudio(blob);
           if (result.text.trim()) {
             onTranscript(result.text.trim());
           } else {
-            setVoiceState("error");
+            setVS("error");
             setErrorMsg("No speech detected");
-            setTimeout(() => setVoiceState("idle"), 2000);
+            setTimeout(() => setVS("idle"), 2000);
             return;
           }
         } catch {
-          setVoiceState("error");
+          setVS("error");
           setErrorMsg("Transcription failed");
-          setTimeout(() => setVoiceState("idle"), 2000);
+          setTimeout(() => setVS("idle"), 2000);
           return;
         }
-        setVoiceState("idle");
+        setVS("idle");
       };
 
       mediaRecorderRef.current = recorder;
       recorder.start();
-      setVoiceState("listening");
+      setVS("listening");
     } catch {
       setShowFallback(true);
     }
-  }, [disabled, voiceState, onTranscript, transcribeAudio]);
+  }, [disabled, voiceState, onTranscript, transcribeAudio, setVS]);
 
   const stopRecording = useCallback(() => {
     if (voiceState !== "listening") return;

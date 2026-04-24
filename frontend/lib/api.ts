@@ -92,6 +92,49 @@ export async function textToSpeech(text: string): Promise<Blob> {
   return res.blob();
 }
 
+export type StreamEvent =
+  | { type: "token"; text: string }
+  | { type: "done"; stage: string; interview_complete: boolean };
+
+export async function* respondStream(
+  sessionId: string,
+  userInput: string,
+  stage: string
+): AsyncGenerator<StreamEvent> {
+  const res = await fetch(`${BASE}/session/${sessionId}/respond/stream`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ user_input: userInput, stage }),
+  });
+  if (!res.ok || !res.body) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.detail ?? `Respond failed (${res.status})`);
+  }
+
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+
+    const lines = buffer.split("\n");
+    buffer = lines.pop() ?? "";
+
+    for (const line of lines) {
+      if (line.startsWith("data: ")) {
+        try {
+          yield JSON.parse(line.slice(6)) as StreamEvent;
+        } catch {
+          // malformed line — skip
+        }
+      }
+    }
+  }
+}
+
 export async function transcribe(audioBlob: Blob): Promise<{ text: string }> {
   const formData = new FormData();
   formData.append("audio", audioBlob, "recording.webm");

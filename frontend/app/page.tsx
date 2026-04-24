@@ -12,7 +12,6 @@ export default function StartPage() {
   const [dragging, setDragging] = useState(false);
   const [role, setRole] = useState("");
   const [company, setCompany] = useState("");
-  const [interviewer, setInterviewer] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
 
@@ -41,7 +40,6 @@ export default function StartPage() {
       formData.append("resume", file!);
       formData.append("role", role.trim());
       if (company.trim()) formData.append("company", company.trim());
-      if (interviewer.trim()) formData.append("interviewer_name", interviewer.trim());
 
       const data = await startSession(formData);
 
@@ -149,18 +147,6 @@ export default function StartPage() {
                 value={company}
                 onChange={(e) => setCompany(e.target.value)}
                 placeholder="e.g. Google"
-                className="w-full bg-neutral-900 border border-neutral-700 rounded-xl px-4 py-3 text-sm text-slate-100 placeholder-slate-500 focus:outline-none focus:border-indigo-500 transition-colors"
-              />
-            </div>
-            <div>
-              <label className="text-[11px] uppercase tracking-widest text-slate-400 block mb-1.5">
-                Interviewer Name (optional)
-              </label>
-              <input
-                type="text"
-                value={interviewer}
-                onChange={(e) => setInterviewer(e.target.value)}
-                placeholder="e.g. Sarah"
                 className="w-full bg-neutral-900 border border-neutral-700 rounded-xl px-4 py-3 text-sm text-slate-100 placeholder-slate-500 focus:outline-none focus:border-indigo-500 transition-colors"
               />
             </div>
