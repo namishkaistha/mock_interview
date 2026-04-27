@@ -339,9 +339,9 @@ async def evaluate_interview(session_data: dict) -> dict:
                 {
                     "question": str,
                     "user_answer": str,
-                    "star_score": {"situation": int, "task": int, "action": int, "result": int},
-                    "strengths": str,
-                    "improvements": str,
+                    "star_scores": {"situation": int, "task": int, "action": int, "result": int},
+                    "strengths": [str, ...],
+                    "improvements": [str, ...],
                 }
             ],
             "top_strengths": [str, ...],
@@ -377,14 +377,14 @@ Return ONLY a JSON object (no markdown, no extra text) in this exact format:
     {{
       "question": "<the behavioral question>",
       "user_answer": "<summary of the candidate's answer>",
-      "star_score": {{
+      "star_scores": {{
         "situation": <int 0-10>,
         "task": <int 0-10>,
         "action": <int 0-10>,
         "result": <int 0-10>
       }},
-      "strengths": "<what the candidate did well>",
-      "improvements": "<what the candidate could improve>"
+      "strengths": ["<strength 1>", "<strength 2>"],
+      "improvements": ["<improvement 1>", "<improvement 2>"]
     }}
   ],
   "top_strengths": ["<strength 1>", "<strength 2>"],
