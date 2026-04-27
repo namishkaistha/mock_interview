@@ -316,6 +316,17 @@ export default function InterviewPage() {
       )}
 
       <div className="h-40" />
+
+      {/* Feedback loading overlay */}
+      {endingSession && (
+        <div className="fixed inset-0 z-50 bg-neutral-950/95 backdrop-blur-sm flex flex-col items-center justify-center gap-6">
+          <div className="w-10 h-10 rounded-full border-2 border-indigo-500/30 border-t-indigo-400 animate-spin" />
+          <div className="flex flex-col items-center gap-2">
+            <p className="text-slate-200 font-semibold text-base">Analyzing your interview…</p>
+            <p className="text-slate-500 text-sm">This takes about 15–20 seconds</p>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

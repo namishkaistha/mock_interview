@@ -1,5 +1,5 @@
 """Pydantic schemas for request and response validation."""
-from typing import Literal, Optional
+from typing import List, Literal, Optional
 from pydantic import BaseModel
 
 
@@ -50,9 +50,9 @@ class QuestionFeedback(BaseModel):
 
     question: str
     user_answer: str
-    star_score: STARScore
-    strengths: str
-    improvements: str
+    star_scores: STARScore
+    strengths: List[str]
+    improvements: List[str]
 
 
 class SessionEndResponse(BaseModel):
